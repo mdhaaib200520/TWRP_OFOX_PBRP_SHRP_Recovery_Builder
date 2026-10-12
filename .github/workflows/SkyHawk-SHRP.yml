@@ -10,7 +10,7 @@ on:
       MANIFEST_BRANCH:
         description: 'SHRP Manifest Branch'
         required: true
-        default: ''
+        default: 'shrp-9.0'
         type: choice
         options:
         - shrp-12.1
@@ -18,44 +18,42 @@ on:
         - v3_11.0
         - v3_9.0
       DEVICE_TREE:
-        description: 'Custom Recovery Tree' # Your already made Device Tree for TWRP
+        description: 'Custom Recovery Tree'
         required: true
-        default: 'https://github.com/mlm-games/twrp_lenovo_7305x_m7_mt8765_P' 
+        default: 'https://github.com/mlm-games/twrp_lenovo_7305x_m7_mt8765_P'
       DEVICE_TREE_BRANCH:
-        description: 'Custom Recovery Tree Branch' # Your Device Tree Branch, make sure it's right.
+        description: 'Custom Recovery Tree Branch'
         required: true
         default: 'shrp-9.0'
       DEVICE_PATH:
-        description: 'Specify your Device Path' # As is, just like your DEVICE_PATH in your BoardConfig.mk
+        description: 'Specify your Device Path'
         required: true
         default: 'device/lenovo/mt8765_P'
       DEVICE_NAME:
-        description: 'Specify your Device Codename' # As is, just like your PRODUCT_DEVICE in your device tree.
+        description: 'Specify your Device Codename'
         required: true
         default: 'mt8765_P'
       BUILD_TARGET:
-        description: 'Specify your Build Target' # Pick among boot, recovery and vendor_boot
+        description: 'Specify your Build Target'
         required: true
         default: 'recovery'
         type: choice
         options:
-        - boot
-        - recovery
         - vendorboot
       LDCHECK:
         description: 'Use LDCHECK'
         required: false
-        default: 'false'
+        default: false
         type: boolean
       LDCHECKPATH:
-        description: 'Path of blobs to check' # Use it know what kind of dependencies your missing for decryption blobs.
+        description: 'Path of blobs to check'
         required: true
         default: 'system/bin/qseecomd'
 
 jobs:
   build:
     name: Build SHRP by ${{ github.actor }}
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
     env:
       OUTPUT_DIR: ${{ github.workspace }}/android-recovery/out/target/product
@@ -64,8 +62,8 @@ jobs:
       contents: write
     steps:
     - name: Check Out
-      uses: actions/checkout@v6
-      
+      uses: actions/checkout@v4
+
     - name: Display Inputs
       run: |
         echo "Displaying variables/inputs."
@@ -76,7 +74,7 @@ jobs:
 
     - name: Cleanup
       uses: rokibhasansagar/slimhub_actions@main
-      
+
     - name: Set Swap Space
       uses: pierotofy/set-swap-space@master
       with:
@@ -84,7 +82,7 @@ jobs:
 
     - name: Check Manifest Branch
       run: |
-        if [ ${{ inputs.MANIFEST_BRANCH }} == 'v3_11.0' ] || [ ${{ inputs.MANIFEST_BRANCH }} == 'shrp-12.1' ]; then
+        if [ "${{ inputs.MANIFEST_BRANCH }}" == "v3_11.0" ] || [ "${{ inputs.MANIFEST_BRANCH }}" == "shrp-12.1" ]; then
             echo "CHECK_LEGACY_BRANCH=false" >> $GITHUB_ENV
         else
             echo "CHECK_LEGACY_BRANCH=true" >> $GITHUB_ENV
@@ -92,7 +90,16 @@ jobs:
 
     - name: Prepare the environment
       run: |
-        sudo apt update && sudo apt -y upgrade && sudo apt -y install gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib libc6-dev lib32ncurses5-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libwxgtk3.0-gtk3-dev libxml2 lzop pngcrush schedtool squashfs-tools imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libtinfo5 libgflags-dev libncurses5 python3
+        sudo apt update
+        sudo apt -y upgrade
+        sudo apt -y install \
+          gperf gcc-multilib g++-multilib libc6-dev \
+          x11proto-core-dev libx11-dev tree lib32z-dev \
+          libgl1-mesa-dev libxml2-utils xsltproc bc ccache \
+          lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev \
+          libsdl1.2-dev libxml2 lzop pngcrush schedtool squashfs-tools \
+          imagemagick libbz2-dev lzma ncftp qemu-user-static \
+          libstdc++-10-dev libgflags-dev python3 python3-pip
 
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@v1.2
@@ -100,14 +107,14 @@ jobs:
         max-size: "10G"
 
     - name: Install OpenJDK
-      uses: actions/setup-java@v5
+      uses: actions/setup-java@v4
       with:
         distribution: 'zulu'
         java-version: '8'
-        
+
     - name: Install Git-Repo
       run: |
-        mkdir ~/bin
+        mkdir -p ~/bin
         curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
         chmod a+x ~/bin/repo
         sudo ln -sf ~/bin/repo /usr/bin/repo
@@ -124,7 +131,7 @@ jobs:
       run: |
         cd android-recovery
         repo sync -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
-      
+
     - name: Clone Device Tree
       run: |
         cd android-recovery
@@ -135,19 +142,21 @@ jobs:
     - name: Check Build Makefile
       run: |
         cd android-recovery
-        if [ -f ${{ inputs.DEVICE_PATH }}/twrp_${{ inputs.DEVICE_NAME}}.mk ]; then
+        if [ -f "${{ inputs.DEVICE_PATH }}/twrp_${{ inputs.DEVICE_NAME }}.mk" ]; then
             echo "DEVICE_MAKEFILE=twrp_${{ inputs.DEVICE_NAME }}" >> $GITHUB_ENV
-        elif [ -f ${{ inputs.DEVICE_PATH }}/omni_${{ inputs.DEVICE_NAME}}.mk ]; then
+        elif [ -f "${{ inputs.DEVICE_PATH }}/omni_${{ inputs.DEVICE_NAME }}.mk" ]; then
             echo "DEVICE_MAKEFILE=omni_${{ inputs.DEVICE_NAME }}" >> $GITHUB_ENV
         else
-            echo "No recovery makefile file found!"
+            echo "::error::No recovery makefile found!"
+            exit 1
         fi
-      continue-on-error: true
 
     - name: Installing python2 for legacy builds
       if: env.CHECK_LEGACY_BRANCH == 'true'
       run: |
-        sudo apt-get install python2 python-is-python2
+        sudo apt-get update
+        sudo apt-get install -y python2
+        sudo ln -sf /usr/bin/python2 /usr/bin/python
 
     - name: Building SkyHawk
       run: |
@@ -175,13 +184,13 @@ jobs:
             echo "::warning::The zip file isn't present but make sure the image is from only after 100% completion in build stage"
         fi
 
-    - name: Set Build Date # Output will be use in Release
+    - name: Set Build Date
       run: |
         echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
-      
+
     - name: Upload to Release
       if: always() && env.CHECK_IMG_IS_OK == 'true'
-      uses: softprops/action-gh-release@master
+      uses: softprops/action-gh-release@v2
       with:
         files: |
           ${{ env.OUTPUT_DIR }}/${{ inputs.DEVICE_NAME }}/${{ inputs.BUILD_TARGET }}.img
@@ -190,13 +199,13 @@ jobs:
         name: Unofficial SHRP For ${{ inputs.DEVICE_NAME }} // ${{ env.BUILD_DATE }}
         tag_name: ${{ github.run_id }}
         body: |
-          Build: ${{ env.MANIFEST_BRANCH }}
+          Build: ${{ inputs.MANIFEST_BRANCH }}
           Device: [Device Tree/Branch](${{ inputs.DEVICE_TREE }}/tree/${{ inputs.DEVICE_TREE_BRANCH }})
           Commit: Most recent [commit](${{ inputs.DEVICE_TREE }}/commit/${{ env.COMMIT_ID }}) during building.
         prerelease: true
 
     - name: Run LDCheck
-      if: inputs.LDCHECK == 'true'
+      if: inputs.LDCHECK == true
       run: |
         cd tools
         mv -n libneeds ${{ env.OUTPUT_DIR }}/${{ inputs.DEVICE_NAME }}/recovery/root/
