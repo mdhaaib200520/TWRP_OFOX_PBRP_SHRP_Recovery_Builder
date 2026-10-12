@@ -4,35 +4,33 @@ on:
   workflow_dispatch:
     inputs:
       MANIFEST:
-        description: 'SHRP Manifest (For old SHRP manifest, use v3_9.0, v3_11.0)'
+        description: 'SHRP Manifest URL'
         required: true
-        default: 'https://github.com/SHRP-Reborn/manifest.git'
+        default: 'https://github.com/SHRP/manifest.git'
       MANIFEST_BRANCH:
         description: 'SHRP Manifest Branch'
         required: true
-        default: 'shrp-9.0'
+        default: 'shrp-12.1'
         type: choice
         options:
         - shrp-12.1
         - shrp-9.0
-        - v3_11.0
-        - v3_9.0
       DEVICE_TREE:
         description: 'Custom Recovery Tree'
         required: true
-        default: 'https://github.com/mdhaaib200520/SHRP_Redmi-14C.git'
+        default: 'https://github.com/lpxx50117/twrp_device_xiaomi_lake'
       DEVICE_TREE_BRANCH:
         description: 'Custom Recovery Tree Branch'
         required: true
-        default: 'shrp-9.0'
+        default: 'alpha_20250227'
       DEVICE_PATH:
         description: 'Specify your Device Path'
         required: true
-        default: 'device/xiaomi/pond'
+        default: 'device/xiaomi/lake'
       DEVICE_NAME:
         description: 'Specify your Device Codename'
         required: true
-        default: 'pond'
+        default: 'lake'
       BUILD_TARGET:
         description: 'Specify your Build Target'
         required: true
@@ -40,6 +38,7 @@ on:
         type: choice
         options:
         - vendorboot
+        - recovery
       LDCHECK:
         description: 'Use LDCHECK'
         required: false
@@ -66,11 +65,12 @@ jobs:
 
     - name: Display Inputs
       run: |
-        echo "Displaying variables/inputs."
+        echo "Manifest: ${{ inputs.MANIFEST }}"
         echo "Manifest Branch: ${{ inputs.MANIFEST_BRANCH }}"
         echo "Device Tree: ${{ inputs.DEVICE_TREE }}"
         echo "Device Branch: ${{ inputs.DEVICE_TREE_BRANCH }}"
-        echo "Build Target: ${{ inputs.BUILD_TARGET }}image"
+        echo "Device Path: ${{ inputs.DEVICE_PATH }}"
+        echo "Device Name: ${{ inputs.DEVICE_NAME }}"
 
     - name: Cleanup
       uses: rokibhasansagar/slimhub_actions@main
@@ -79,14 +79,6 @@ jobs:
       uses: pierotofy/set-swap-space@master
       with:
         swap-size-gb: 12
-
-    - name: Check Manifest Branch
-      run: |
-        if [ "${{ inputs.MANIFEST_BRANCH }}" == "v3_11.0" ] || [ "${{ inputs.MANIFEST_BRANCH }}" == "shrp-12.1" ]; then
-            echo "CHECK_LEGACY_BRANCH=false" >> $GITHUB_ENV
-        else
-            echo "CHECK_LEGACY_BRANCH=true" >> $GITHUB_ENV
-        fi
 
     - name: Prepare the environment
       run: |
@@ -121,7 +113,7 @@ jobs:
 
     - name: Initialize Repo
       run: |
-        mkdir android-recovery
+        mkdir -p android-recovery
         cd android-recovery
         git config --global user.name "${{ github.actor }}"
         git config --global user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
@@ -142,51 +134,54 @@ jobs:
     - name: Check Build Makefile
       run: |
         cd android-recovery
-        if [ -f "${{ inputs.DEVICE_PATH }}/twrp_${{ inputs.DEVICE_NAME }}.mk" ]; then
-            echo "DEVICE_MAKEFILE=twrp_${{ inputs.DEVICE_NAME }}" >> $GITHUB_ENV
-        elif [ -f "${{ inputs.DEVICE_PATH }}/omni_${{ inputs.DEVICE_NAME }}.mk" ]; then
-            echo "DEVICE_MAKEFILE=omni_${{ inputs.DEVICE_NAME }}" >> $GITHUB_ENV
-        else
-            echo "::error::No recovery makefile found!"
-            exit 1
+        DEVICE_DIR="${{ inputs.DEVICE_PATH }}"
+        NAME="${{ inputs.DEVICE_NAME }}"
+
+        if [ ! -d "$DEVICE_DIR" ]; then
+          echo "::error::Device path '$DEVICE_DIR' does not exist."
+          exit 1
         fi
 
-    - name: Installing python2 for legacy builds
-      if: env.CHECK_LEGACY_BRANCH == 'true'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y python2
-        sudo ln -sf /usr/bin/python2 /usr/bin/python
+        # Look for SHRP/OMNI makefiles
+        for prefix in omni shrp twrp; do
+          if [ -f "$DEVICE_DIR/${prefix}_${NAME}.mk" ]; then
+            echo "DEVICE_MAKEFILE=${prefix}_${NAME}" >> $GITHUB_ENV
+            echo "✔ Found ${prefix}_${NAME}.mk"
+            exit 0
+          fi
+        done
 
-    - name: Building SkyHawk
+        echo "::error::No SHRP-compatible makefile (omni_*.mk or shrp_*.mk) found in $DEVICE_DIR"
+        ls -la "$DEVICE_DIR"
+        find "$DEVICE_DIR" -maxdepth 2 -name "*.mk" || true
+        exit 1
+
+    - name: Building SHRP
       run: |
         cd android-recovery
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
-        lunch ${{ env.DEVICE_MAKEFILE }}-eng && make clean && mka ${{ inputs.BUILD_TARGET }}image -j$(nproc --all)
-        echo "Done building your ${{ inputs.BUILD_TARGET }}.img"
+        lunch ${{ env.DEVICE_MAKEFILE }}-eng
+        make clean
+        mka ${{ inputs.BUILD_TARGET }}image -j$(nproc --all)
 
-    - name: Check if the recovery exists
+    - name: Check if the image exists
       if: always()
       run: |
-        img_file=$(find "${{ env.OUTPUT_DIR }}" -name "${{ inputs.BUILD_TARGET }}*.img" -print -quit)
-        zip_file=$(find "${{ env.OUTPUT_DIR }}" -name "SHRP*.zip" -print -quit)
-        if [ -f "$img_file" ]; then
-            echo "CHECK_IMG_IS_OK=true" >> $GITHUB_ENV
-            echo "MD5_IMG=$(md5sum "$img_file" | cut -d ' ' -f 1)" >> $GITHUB_ENV
+        set +e
+        mkdir -p "${{ env.OUTPUT_DIR }}"
+        img_file=$(find "${{ env.OUTPUT_DIR }}" -name "${{ inputs.BUILD_TARGET }}*.img" -print -quit 2>/dev/null)
+        if [ -n "$img_file" ] && [ -f "$img_file" ]; then
+          echo "CHECK_IMG_IS_OK=true" >> $GITHUB_ENV
+          echo "MD5_IMG=$(md5sum "$img_file" | cut -d ' ' -f 1)" >> $GITHUB_ENV
+          echo "✔ Image found: $img_file"
         else
-            echo "Recovery out directory is empty."
+          echo "::warning::No image produced. SHRP build failed (expected with TWRP tree)."
         fi
-        if [ -f "$zip_file" ]; then
-            echo "CHECK_ZIP_IS_OK=true" >> $GITHUB_ENV
-            echo "MD5_ZIP=$(md5sum "$zip_file" | cut -d ' ' -f 1)" >> $GITHUB_ENV
-        else
-            echo "::warning::The zip file isn't present but make sure the image is from only after 100% completion in build stage"
-        fi
+        exit 0
 
     - name: Set Build Date
-      run: |
-        echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
+      run: echo "BUILD_DATE=$(date +%Y%m%d)" >> $GITHUB_ENV
 
     - name: Upload to Release
       if: always() && env.CHECK_IMG_IS_OK == 'true'
@@ -194,23 +189,21 @@ jobs:
       with:
         files: |
           ${{ env.OUTPUT_DIR }}/${{ inputs.DEVICE_NAME }}/${{ inputs.BUILD_TARGET }}.img
-          ${{ env.OUTPUT_DIR }}/${{ inputs.DEVICE_NAME }}/SHRP*.zip
-          ${{ env.OUTPUT_DIR }}/${{ inputs.DEVICE_NAME }}/ramdisk*.*
-        name: Unofficial SHRP For ${{ inputs.DEVICE_NAME }} // ${{ env.BUILD_DATE }}
+        name: SHRP for ${{ inputs.DEVICE_NAME }} // ${{ env.BUILD_DATE }}
         tag_name: ${{ github.run_id }}
         body: |
-          Build: ${{ inputs.MANIFEST_BRANCH }}
-          Device: [Device Tree/Branch](${{ inputs.DEVICE_TREE }}/tree/${{ inputs.DEVICE_TREE_BRANCH }})
-          Commit: Most recent [commit](${{ inputs.DEVICE_TREE }}/commit/${{ env.COMMIT_ID }}) during building.
+          Manifest: ${{ inputs.MANIFEST }} @ ${{ inputs.MANIFEST_BRANCH }}
+          Device: ${{ inputs.DEVICE_TREE }} @ ${{ inputs.DEVICE_TREE_BRANCH }}
+          Commit: ${{ env.COMMIT_ID }}
         prerelease: true
 
     - name: Run LDCheck
       if: inputs.LDCHECK == true
       run: |
-        cd tools
-        mv -n libneeds ${{ env.OUTPUT_DIR }}/${{ inputs.DEVICE_NAME }}/recovery/root/
-        mv -n ldcheck ${{ env.OUTPUT_DIR }}/${{ inputs.DEVICE_NAME }}/recovery/root/
-        cd ${{ env.OUTPUT_DIR }}/${{ inputs.DEVICE_NAME }}/recovery/root
+        set +e
+        cd tools || exit 0
+        mv -n libneeds ${{ env.OUTPUT_DIR }}/${{ inputs.DEVICE_NAME }}/recovery/root/ 2>/dev/null
+        mv -n ldcheck ${{ env.OUTPUT_DIR }}/${{ inputs.DEVICE_NAME }}/recovery/root/ 2>/dev/null
+        cd ${{ env.OUTPUT_DIR }}/${{ inputs.DEVICE_NAME }}/recovery/root || exit 0
         python3 ldcheck -p system/lib64:vendor/lib64:system/lib:vendor/lib -d ${{ inputs.LDCHECKPATH }}
-        echo "Done checking missing dependencies. Review, and reconfigure your tree."
       continue-on-error: true
