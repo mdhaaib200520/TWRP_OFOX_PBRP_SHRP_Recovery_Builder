@@ -18,19 +18,19 @@ on:
       DEVICE_TREE:
         description: 'Custom Recovery Tree'
         required: true
-        default: 'https://github.com/lpxx50117/twrp_device_xiaomi_lake'
+        default: 'https://github.com/mdhaaib200520/SHRP_Redmi-14C'
       DEVICE_TREE_BRANCH:
         description: 'Custom Recovery Tree Branch'
         required: true
-        default: 'alpha_20250227'
+        default: 'main'
       DEVICE_PATH:
         description: 'Specify your Device Path'
         required: true
-        default: 'device/xiaomi/lake'
+        default: 'device/xiaomi/pond'
       DEVICE_NAME:
         description: 'Specify your Device Codename'
         required: true
-        default: 'lake'
+        default: 'pond'
       BUILD_TARGET:
         description: 'Specify your Build Target'
         required: true
@@ -65,12 +65,11 @@ jobs:
 
     - name: Display Inputs
       run: |
-        echo "Manifest: ${{ inputs.MANIFEST }}"
-        echo "Manifest Branch: ${{ inputs.MANIFEST_BRANCH }}"
-        echo "Device Tree: ${{ inputs.DEVICE_TREE }}"
-        echo "Device Branch: ${{ inputs.DEVICE_TREE_BRANCH }}"
+        echo "Manifest: ${{ inputs.MANIFEST }} @ ${{ inputs.MANIFEST_BRANCH }}"
+        echo "Device Tree: ${{ inputs.DEVICE_TREE }} @ ${{ inputs.DEVICE_TREE_BRANCH }}"
         echo "Device Path: ${{ inputs.DEVICE_PATH }}"
         echo "Device Name: ${{ inputs.DEVICE_NAME }}"
+        echo "Build Target: ${{ inputs.BUILD_TARGET }}image"
 
     - name: Cleanup
       uses: rokibhasansagar/slimhub_actions@main
@@ -91,7 +90,14 @@ jobs:
           lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev \
           libsdl1.2-dev libxml2 lzop pngcrush schedtool squashfs-tools \
           imagemagick libbz2-dev lzma ncftp qemu-user-static \
-          libstdc++-10-dev libgflags-dev python3 python3-pip
+          libstdc++-10-dev libgflags-dev python3 python3-pip python2
+
+    - name: Python 2.7 symlinks (REQUIRED for SHRP)
+      run: |
+        sudo ln -sf /usr/bin/python2 /usr/bin/python2.7
+        sudo ln -sf /usr/bin/python2 /usr/bin/python
+        python2.7 --version
+        python --version
 
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@v1.2
@@ -124,12 +130,40 @@ jobs:
         cd android-recovery
         repo sync -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
 
+    - name: Verify SHRP vendor tree exists
+      run: |
+        cd android-recovery
+        if [ ! -f vendor/shrp/config/common.mk ]; then
+          echo "::error::vendor/shrp/config/common.mk NOT FOUND. SHRP manifest did not sync correctly."
+          ls vendor/ 2>/dev/null || true
+          exit 1
+        fi
+        echo "✔ SHRP vendor tree found at vendor/shrp/"
+
     - name: Clone Device Tree
       run: |
         cd android-recovery
         git clone ${{ inputs.DEVICE_TREE }} -b ${{ inputs.DEVICE_TREE_BRANCH }} ./${{ inputs.DEVICE_PATH }}
         cd ${{ inputs.DEVICE_PATH }}
         echo "COMMIT_ID=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+    - name: Debug - Inspect device tree
+      run: |
+        cd android-recovery
+        echo "========= FULL TREE LISTING ========="
+        find ${{ inputs.DEVICE_PATH }} -type f | sort
+        echo ""
+        echo "========= AndroidProducts.mk ========="
+        cat ${{ inputs.DEVICE_PATH }}/AndroidProducts.mk 2>/dev/null || echo "MISSING"
+        echo ""
+        echo "========= Android.bp (first 40 lines) ========="
+        cat ${{ inputs.DEVICE_PATH }}/Android.bp 2>/dev/null | head -40 || echo "MISSING"
+        echo ""
+        echo "========= prebuilt/ ========="
+        ls -la ${{ inputs.DEVICE_PATH }}/prebuilt/ 2>/dev/null || echo "MISSING"
+        echo ""
+        echo "========= recovery/root/ ========="
+        find ${{ inputs.DEVICE_PATH }}/recovery -type f 2>/dev/null || echo "MISSING"
 
     - name: Check Build Makefile
       run: |
@@ -142,8 +176,7 @@ jobs:
           exit 1
         fi
 
-        # Look for SHRP/OMNI makefiles
-        for prefix in omni shrp twrp; do
+        for prefix in shrp omni twrp; do
           if [ -f "$DEVICE_DIR/${prefix}_${NAME}.mk" ]; then
             echo "DEVICE_MAKEFILE=${prefix}_${NAME}" >> $GITHUB_ENV
             echo "✔ Found ${prefix}_${NAME}.mk"
@@ -151,9 +184,9 @@ jobs:
           fi
         done
 
-        echo "::error::No SHRP-compatible makefile (omni_*.mk or shrp_*.mk) found in $DEVICE_DIR"
+        echo "::error::No compatible makefile found in $DEVICE_DIR"
         ls -la "$DEVICE_DIR"
-        find "$DEVICE_DIR" -maxdepth 2 -name "*.mk" || true
+        find "$DEVICE_DIR" -maxdepth 2 -name "*.mk"
         exit 1
 
     - name: Building SHRP
@@ -176,7 +209,7 @@ jobs:
           echo "MD5_IMG=$(md5sum "$img_file" | cut -d ' ' -f 1)" >> $GITHUB_ENV
           echo "✔ Image found: $img_file"
         else
-          echo "::warning::No image produced. SHRP build failed (expected with TWRP tree)."
+          echo "::warning::No image produced. Build failed upstream."
         fi
         exit 0
 
