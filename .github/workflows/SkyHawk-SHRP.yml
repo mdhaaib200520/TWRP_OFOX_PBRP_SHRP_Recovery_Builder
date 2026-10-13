@@ -96,8 +96,8 @@ jobs:
       run: |
         sudo ln -sf /usr/bin/python2 /usr/bin/python2.7 || true
         sudo ln -sf /usr/bin/python2 /usr/bin/python || true
-        python2.7 --version
-        python --version
+        python2.7 --version || true
+        python --version || true
 
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@v1.2
@@ -138,7 +138,7 @@ jobs:
           ls vendor/ 2>/dev/null || true
           exit 1
         fi
-        echo "✔ SHRP vendor tree found at vendor/shrp/"
+        echo "SHRP vendor tree found at vendor/shrp/"
 
     - name: Clone Device Tree
       run: |
@@ -177,7 +177,7 @@ jobs:
         for prefix in shrp omni twrp; do
           if [ -f "$DEVICE_DIR/${prefix}_${NAME}.mk" ]; then
             echo "DEVICE_MAKEFILE=${prefix}_${NAME}" >> $GITHUB_ENV
-            echo "✔ Found ${prefix}_${NAME}.mk"
+            echo "Found ${prefix}_${NAME}.mk"
             exit 0
           fi
         done
@@ -230,7 +230,7 @@ jobs:
           echo "::warning::No artifacts found. Build failed upstream."
           exit 0
         fi
-        echo "✔ Collected $COUNT artifact(s)"
+        echo "Collected $COUNT artifact(s)"
 
     - name: Upload workflow artifact
       if: always() && env.ARTIFACT_COUNT != '0'
