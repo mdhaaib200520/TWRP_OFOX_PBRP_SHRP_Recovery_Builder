@@ -1,60 +1,54 @@
 
-name: SHRP Recovery Builder
+name: SHRP Recovery Builder - Redmi 14C (pond)
 
 on:
   workflow_dispatch:
     inputs:
       MANIFEST_URL:
-        description: SHRP manifest URL
+        description: "SHRP manifest repository"
         required: true
-        default: https://github.com/SHRP-Reborn/manifest.git
+        default: "https://github.com/SHRP/manifest.git"
         type: string
 
       MANIFEST_BRANCH:
-        description: SHRP manifest branch
+        description: "SHRP manifest branch"
         required: true
-        default: shrp-12.1
+        default: "shrp-12.1"
         type: string
 
       DEVICE_TREE_URL:
-        description: Xiaomi pond device tree
+        description: "Redmi 14C device tree"
         required: true
-        default: https://github.com/mdhaaib200520/SHRP_Redmi-14C
+        default: "https://github.com/mdhaaib200520/SHRP_Redmi-14C"
         type: string
 
       DEVICE_TREE_BRANCH:
-        description: Device tree branch
+        description: "Device tree branch"
         required: true
-        default: main
-        type: string
-
-      DEVICE_PATH:
-        description: Device tree path
-        required: true
-        default: device/xiaomi/pond
-        type: string
-
-      DEVICE_NAME:
-        description: Device codename
-        required: true
-        default: pond
+        default: "main"
         type: string
 
       BUILD_TARGET:
-        description: Recovery image target
+        description: "Recovery image target"
         required: true
         type: choice
         options:
-          - recovery
-          - vendorboot
-        default: recovery
+          - recoveryimage
+          - vendorbootimage
+        default: recoveryimage
+
+      RELEASE_TAG:
+        description: "Optional GitHub release tag (leave blank to skip release)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
 
 concurrency:
-  group: shrp-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  group: shrp-pond-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -62,289 +56,320 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
 
+    env:
+      TZ: UTC
+      DEVICE_PATH: device/xiaomi/pond
+      DEVICE_NAME: pond
+      PRODUCT_NAME: shrp_pond
+      PYTHON_VERSION: "2.7.18"
+      USE_CCACHE: "1"
+      CCACHE_EXEC: /usr/bin/ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      MANIFEST_URL: ${{ inputs.MANIFEST_URL }}
+      MANIFEST_BRANCH: ${{ inputs.MANIFEST_BRANCH }}
+      DEVICE_TREE_URL: ${{ inputs.DEVICE_TREE_URL }}
+      DEVICE_TREE_BRANCH: ${{ inputs.DEVICE_TREE_BRANCH }}
+      BUILD_TARGET: ${{ inputs.BUILD_TARGET }}
+      RELEASE_TAG: ${{ inputs.RELEASE_TAG }}
+
     steps:
-      - name: Checkout Builder
+      - name: Checkout workflow repository
         uses: actions/checkout@v4
 
-      - name: Free Disk Space
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc
-          sudo apt-get clean
-          df -h
+      - name: Free runner disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
 
-      - name: Install Dependencies
+      - name: Install build dependencies
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison build-essential ccache curl flex \
-            g++-multilib gcc-multilib git git-lfs gnupg gperf \
-            imagemagick lib32ncurses-dev lib32z1-dev libelf-dev \
-            liblz4-tool libncurses-dev libssl-dev libxml2 \
-            libxml2-utils lzop openjdk-11-jdk rsync \
-            schedtool squashfs-tools unzip xz-utils zip \
-            zlib1g-dev libffi-dev libsqlite3-dev libbz2-dev \
-            libreadline-dev libncursesw5-dev libgdbm-dev \
-            liblzma-dev tk-dev uuid-dev wget python3 \
-            libncurses5-dev libncurses5
+            bc bison build-essential ccache curl flex g++-multilib \
+            gcc-multilib git git-lfs gnupg gperf imagemagick \
+            lib32ncurses-dev lib32z1-dev libelf-dev liblz4-tool \
+            libncurses-dev libsdl1.2-dev libssl-dev libxml2 \
+            libxml2-utils lzop make pngcrush rsync schedtool \
+            squashfs-tools unzip zip zlib1g-dev \
+            python3 python3-pip python-is-python3 \
+            openjdk-11-jdk jq
 
-          java -version
-          python3 --version
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
 
-      - name: Install Python 2.7
+      - name: Set up Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: "11"
+
+      - name: Configure swap
         shell: bash
         run: |
-          set -e
-
-          if ! command -v python2.7 >/dev/null 2>&1; then
-            cd /tmp
-            curl -fL --retry 3 \
-              https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tgz \
-              -o Python-2.7.18.tgz
-            tar -xzf Python-2.7.18.tgz
-            cd Python-2.7.18
-
-            ./configure \
-              --prefix=/usr/local \
-              --enable-shared \
-              --with-ensurepip=no
-
-            make -j2
-            sudo make altinstall
-          fi
-
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
-          sudo ldconfig
-          python2.7 --version
-
-      - name: Configure Java
-        shell: bash
-        run: |
-          set -e
-          JAVA_PATH="$(readlink -f "$(command -v javac)")"
-          JAVA_HOME_PATH="$(dirname "$(dirname "$JAVA_PATH")")"
-          echo "JAVA_HOME=$JAVA_HOME_PATH" >> "$GITHUB_ENV"
-          echo "$JAVA_HOME_PATH/bin" >> "$GITHUB_PATH"
-
-      - name: Configure Swap
-        shell: bash
-        run: |
-          set -e
+          set -euxo pipefail
           if ! swapon --show | grep -q '/swapfile'; then
-            sudo fallocate -l 12G /swapfile
+            sudo fallocate -l 12G /swapfile || \
+              sudo dd if=/dev/zero of=/swapfile bs=1M count=12288
             sudo chmod 600 /swapfile
             sudo mkswap /swapfile
             sudo swapon /swapfile
           fi
           free -h
 
-      - name: Install Repo Tool
+      - name: Install repo tool
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
           mkdir -p "$HOME/bin"
           curl -fsSL \
             https://storage.googleapis.com/git-repo-downloads/repo \
             -o "$HOME/bin/repo"
-          chmod +x "$HOME/bin/repo"
+          chmod a+x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
-          "$HOME/bin/repo" version
+          "$HOME/bin/repo" --version
 
-      - name: Initialize SHRP Sources
+      - name: Install Python 2.7 for legacy build scripts
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
+          if command -v python2.7 >/dev/null 2>&1; then
+            python2.7 --version
+            exit 0
+          fi
+
+          mkdir -p "$RUNNER_TEMP/python27"
+          cd "$RUNNER_TEMP/python27"
+
+          curl -fsSLO \
+            https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tgz
+          tar -xzf Python-2.7.18.tgz
+          cd Python-2.7.18
+
+          ./configure \
+            --prefix=/usr/local \
+            --enable-unicode=ucs4 \
+            --with-ensurepip=no
+
+          make -j2
+          sudo make altinstall
+
+          python2.7 --version
+
+      - name: Initialize SHRP source
+        shell: bash
+        run: |
+          set -euxo pipefail
           mkdir -p android-recovery
           cd android-recovery
 
-          repo init --depth=1 \
-            -u "${{ inputs.MANIFEST_URL }}" \
-            -b "${{ inputs.MANIFEST_BRANCH }}"
+          repo init \
+            -u "$MANIFEST_URL" \
+            -b "$MANIFEST_BRANCH" \
+            --depth=1
 
-      - name: Sync SHRP Sources
+      - name: Sync SHRP source
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
           cd android-recovery
-          repo sync -c -j2 \
-            --force-sync \
+
+          repo sync \
+            -c \
             --no-clone-bundle \
-            --no-tags
+            --no-tags \
+            --optimized-fetch \
+            --prune \
+            -j2
 
-      - name: Ensure SHRP Vendor Configuration
+      - name: Clone Redmi 14C device tree
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
           cd android-recovery
 
-          if [ ! -f vendor/shrp/config/common.mk ]; then
-            echo "SHRP common.mk missing; checking vendor repository."
-
-            if [ -e vendor/shrp ]; then
-              echo "::error::vendor/shrp exists but config/common.mk is missing."
-              echo "Inspect the existing repository and branch before replacing it."
-              exit 1
-            fi
-
-            git clone \
-              https://github.com/SHRP/android_vendor_shrp.git \
-              vendor/shrp
+          if [ -e "$DEVICE_PATH" ]; then
+            echo "Removing existing device tree at $DEVICE_PATH"
+            rm -rf "$DEVICE_PATH"
           fi
 
-          if [ ! -f vendor/shrp/config/common.mk ]; then
-            echo "::error::Vendor repository does not provide config/common.mk."
-            echo "A compatible SHRP 12.1 vendor branch is required."
+          mkdir -p "$(dirname "$DEVICE_PATH")"
+
+          git clone \
+            --depth=1 \
+            --branch "$DEVICE_TREE_BRANCH" \
+            "$DEVICE_TREE_URL" \
+            "$DEVICE_PATH"
+
+          echo "=== Device tree files ==="
+          ls -la "$DEVICE_PATH"
+
+          test -f "$DEVICE_PATH/AndroidProducts.mk"
+          test -f "$DEVICE_PATH/device.mk"
+
+          if [ ! -f "$DEVICE_PATH/shrp_pond.mk" ]; then
+            echo "::error::Missing $DEVICE_PATH/shrp_pond.mk"
+            echo "The device tree must provide the SHRP product makefile."
+            exit 1
+          fi
+
+      - name: Diagnose SHRP vendor configuration
+        shell: bash
+        run: |
+          set -u
+          cd android-recovery
+
+          echo "========== vendor/shrp directory =========="
+          ls -la vendor/shrp 2>&1 || true
+
+          echo
+          echo "========== vendor/shrp Git information =========="
+          if git -C vendor/shrp rev-parse --is-inside-work-tree \
+              >/dev/null 2>&1; then
+            git -C vendor/shrp remote -v || true
             git -C vendor/shrp branch -a || true
+            git -C vendor/shrp log -1 --oneline || true
+          else
+            echo "vendor/shrp is not a Git repository"
+          fi
+
+          echo
+          echo "========== Search vendor tree for common.mk =========="
+          find vendor -path '*/config/common.mk' -type f -print \
+            2>/dev/null || true
+
+          echo
+          echo "========== Manifest project declarations =========="
+          grep -RniE 'android_vendor_shrp|vendor/shrp' \
+            .repo/manifests .repo/local_manifests 2>/dev/null || true
+
+          echo
+          echo "========== Project list references =========="
+          grep -nE 'vendor/shrp|android_vendor_shrp' \
+            .repo/project.list 2>/dev/null || true
+
+          if [ -f vendor/shrp/config/common.mk ]; then
+            echo "SHRP vendor common.mk exists."
+          else
+            echo "::error::vendor/shrp/config/common.mk is missing."
+            echo "The synced SHRP vendor project or manifest is incompatible."
+            echo "Inspect the Git remote, branch, and manifest output above."
             exit 1
           fi
 
-          echo "SHRP vendor common.mk found."
-
-      - name: Fetch Pond Device Tree
+      - name: Validate SHRP product configuration
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
           cd android-recovery
 
-          DEVICE_DIR="${{ inputs.DEVICE_PATH }}"
+          echo "========== Product makefile =========="
+          sed -n '1,220p' "$DEVICE_PATH/shrp_pond.mk"
 
-          if [ -e "$DEVICE_DIR" ]; then
-            echo "::error::Device path already exists: $DEVICE_DIR"
-            exit 1
-          fi
+          echo
+          echo "========== AndroidProducts.mk =========="
+          cat "$DEVICE_PATH/AndroidProducts.mk"
 
-          mkdir -p "$(dirname "$DEVICE_DIR")"
+          echo
+          echo "========== SHRP common configuration =========="
+          test -f vendor/shrp/config/common.mk
 
-          git clone --depth=1 \
-            --branch "${{ inputs.DEVICE_TREE_BRANCH }}" \
-            "${{ inputs.DEVICE_TREE_URL }}" \
-            "$DEVICE_DIR"
+          echo
+          echo "========== Required product references =========="
+          grep -RniE \
+            'vendor/shrp/config/common.mk|shrp_pond|PRODUCT_NAME' \
+            "$DEVICE_PATH" \
+            --include='*.mk' \
+            --include='AndroidProducts.mk' || true
 
-          echo "DEVICE_COMMIT=$(git -C "$DEVICE_DIR" rev-parse HEAD)" \
-            >> "$GITHUB_ENV"
-
-          echo "DEVICE_SHORT_COMMIT=$(git -C "$DEVICE_DIR" rev-parse --short HEAD)" \
-            >> "$GITHUB_ENV"
-
-      - name: Validate SHRP Product
+      - name: Configure ccache
         shell: bash
         run: |
-          set -e
-          cd android-recovery
-
-          DEVICE_DIR="${{ inputs.DEVICE_PATH }}"
-
-          for FILE in AndroidProducts.mk BoardConfig.mk device.mk shrp_pond.mk; do
-            if [ ! -f "$DEVICE_DIR/$FILE" ]; then
-              echo "::error::Missing $DEVICE_DIR/$FILE"
-              exit 1
-            fi
-          done
-
-          if [ ! -f vendor/shrp/config/common.mk ]; then
-            echo "::error::SHRP common.mk is missing."
-            exit 1
-          fi
-
-          echo "=== AndroidProducts.mk ==="
-          cat "$DEVICE_DIR/AndroidProducts.mk"
-
-          echo "=== Product makefile ==="
-          grep -nE 'PRODUCT_NAME|PRODUCT_DEVICE|inherit-product' \
-            "$DEVICE_DIR/shrp_pond.mk" || true
-
-      - name: Configure CCache
-        shell: bash
-        run: |
-          set -e
-          ccache -M 5G
-          echo "USE_CCACHE=1" >> "$GITHUB_ENV"
-          echo "CCACHE_EXEC=$(command -v ccache)" >> "$GITHUB_ENV"
+          set -euxo pipefail
+          mkdir -p "$CCACHE_DIR"
+          ccache -M 8G
+          ccache -o compression=true
           ccache -s
 
-      - name: Build SHRP
+      - name: Build SHRP recovery
         shell: bash
         run: |
-          set -eo pipefail
-          cd "$GITHUB_WORKSPACE/android-recovery"
+          set -euxo pipefail
+          cd android-recovery
 
-          export TOP="$PWD"
-          export ALLOW_MISSING_DEPENDENCIES=true
-          export PATH="/usr/local/bin:$PATH"
-
-          test -f build/envsetup.sh || {
-            echo "::error::build/envsetup.sh is missing."
-            exit 1
-          }
+          export USE_CCACHE=1
+          export CCACHE_EXEC=/usr/bin/ccache
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
 
           source build/envsetup.sh
 
-          echo "=== Select SHRP product ==="
-          lunch shrp_pond-eng
+          lunch "${PRODUCT_NAME}-eng"
 
-          case "${{ inputs.BUILD_TARGET }}" in
-            recovery)
-              BUILD_GOAL=recoveryimage
-              ;;
-            vendorboot)
-              BUILD_GOAL=vendorbootimage
-              ;;
-            *)
-              echo "::error::Unsupported build target."
-              exit 1
-              ;;
-          esac
+          if [ "$BUILD_TARGET" = "vendorbootimage" ]; then
+            mka vendorbootimage
+          else
+            mka recoveryimage
+          fi
 
-          echo "=== Building $BUILD_GOAL ==="
-          mka "$BUILD_GOAL" -j2
-
-      - name: Collect Artifacts
+      - name: Collect build artifacts
         if: always()
         shell: bash
         run: |
-          set -e
-          OUTPUT="$GITHUB_WORKSPACE/android-recovery/out/target/product/${{ inputs.DEVICE_NAME }}"
-          mkdir -p artifacts
+          set -u
+          mkdir -p output
 
-          if [ -d "$OUTPUT" ]; then
-            for FILE in recovery.img vendor_boot.img; do
-              if [ -f "$OUTPUT/$FILE" ]; then
-                cp -f "$OUTPUT/$FILE" "artifacts/$FILE"
-              fi
-            done
+          cd android-recovery
 
-            find "$OUTPUT" -maxdepth 1 -type f \
-              -name '*.zip' -exec cp -f {} artifacts/ \;
-          else
-            echo "::warning::Output directory not found: $OUTPUT"
-          fi
+          echo "========== Search for recovery images =========="
+          find out/target/product/pond \
+            -maxdepth 3 \
+            -type f \
+            \( -name 'recovery.img' \
+            -o -name 'vendor_boot.img' \
+            -o -name 'boot.img' \) \
+            -print 2>/dev/null || true
 
-          ls -lh artifacts || true
+          for image in recovery.img vendor_boot.img boot.img; do
+            find out/target/product/pond \
+              -maxdepth 3 \
+              -type f \
+              -name "$image" \
+              -exec cp -f {} "$GITHUB_WORKSPACE/output/" \; \
+              2>/dev/null || true
+          done
 
-      - name: Upload Build Artifacts
+          cd "$GITHUB_WORKSPACE"
+
+          echo "========== Collected artifacts =========="
+          ls -lh output || true
+
+      - name: Upload recovery artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: SHRP-pond-${{ github.run_number }}
-          path: artifacts/*
+          name: SHRP-pond-recovery
+          path: output/*
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Publish GitHub Release
-        if: success()
+      - name: Publish GitHub release
+        if: success() && inputs.RELEASE_TAG != ''
         uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag_name: SHRP-pond-${{ github.run_number }}
-          name: SHRP pond build ${{ github.run_number }}
+          tag_name: ${{ inputs.RELEASE_TAG }}
+          name: SHRP Recovery - Redmi 14C (pond)
           body: |
-            Automated SHRP recovery build.
-            Device: pond
-            Target: ${{ inputs.BUILD_TARGET }}
+            SHRP recovery build for Xiaomi Redmi 14C / POCO C75.
+            Device codename: pond
             Manifest branch: ${{ inputs.MANIFEST_BRANCH }}
             Device tree branch: ${{ inputs.DEVICE_TREE_BRANCH }}
-            Device tree commit: ${{ env.DEVICE_SHORT_COMMIT }}
-            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          files: artifacts/*
-          
+          files: output/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
