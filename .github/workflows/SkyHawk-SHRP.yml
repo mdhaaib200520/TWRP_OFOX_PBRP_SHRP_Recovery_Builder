@@ -86,8 +86,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/share/dotnet /opt/ghc
           sudo apt-get clean
           df -h
 
@@ -102,18 +101,47 @@ jobs:
             imagemagick lib32ncurses-dev lib32z1-dev libelf-dev \
             liblz4-tool libncurses-dev libssl-dev libxml2 \
             libxml2-utils lzop openjdk-11-jdk \
-            python-is-python3 rsync schedtool squashfs-tools \
-            unzip xz-utils zip zlib1g-dev
+            rsync schedtool squashfs-tools unzip xz-utils zip \
+            zlib1g-dev libffi-dev libsqlite3-dev libbz2-dev \
+            libreadline-dev libncursesw5-dev libgdbm-dev \
+            liblzma-dev tk-dev uuid-dev wget
 
-          python --version
           python3 --version
           java -version
 
-          if command -v python2 >/dev/null 2>&1; then
-            python2 --version
-          else
-            echo "::warning::Python 2 is unavailable. A legacy build may require additional setup."
+      - name: Install Legacy Python 2.7
+        shell: bash
+        run: |
+          set -eo pipefail
+
+          if ! command -v python2.7 >/dev/null 2>&1; then
+            cd /tmp
+            curl -fL --retry 3 \
+              https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tgz \
+              -o Python-2.7.18.tgz
+
+            tar -xzf Python-2.7.18.tgz
+            cd Python-2.7.18
+
+            ./configure \
+              --prefix=/usr/local \
+              --enable-shared \
+              --with-ensurepip=no
+
+            make -j2
+            sudo make altinstall
           fi
+
+          PYTHON2_PATH="$(command -v python2.7 || true)"
+
+          if [ -z "$PYTHON2_PATH" ]; then
+            echo "::error::Python 2.7 installation failed."
+            exit 1
+          fi
+
+          echo "Python 2.7 executable: $PYTHON2_PATH"
+          python2.7 --version
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
 
       - name: Configure Java
         shell: bash
@@ -180,21 +208,24 @@ jobs:
           set -eo pipefail
           cd android-recovery
 
-          if [ ! -d vendor/shrp ]; then
-            echo "::error::vendor/shrp is missing."
-            echo "Check whether the selected manifest includes the SHRP vendor repository."
-            find vendor -maxdepth 3 -type d -print 2>/dev/null || true
-            exit 1
+          echo "=== Vendor directory ==="
+          ls -la vendor || true
+          ls -la vendor/shrp || true
+
+          echo "=== SHRP vendor setup ==="
+          if [ -f vendor/shrp/vendorsetup.sh ]; then
+            cat vendor/shrp/vendorsetup.sh
           fi
 
-          echo "=== SHRP configuration files ==="
-          find vendor/shrp -type f \
-            \( -name "common.mk" -o -name "*shrp*.mk" \) \
-            -print | sort
+          echo "=== Search for common.mk ==="
+          find vendor -type f -path "*/config/common.mk" \
+            -print 2>/dev/null || true
 
           if [ ! -f vendor/shrp/config/common.mk ]; then
-            echo "::warning::vendor/shrp/config/common.mk is absent."
-            echo "Check the SHRP vendor tree if product configuration fails."
+            echo "::error::Required file vendor/shrp/config/common.mk is missing."
+            echo "The synced vendor tree does not match the device tree's expected layout."
+            echo "Correct the SHRP manifest/vendor tree or the include in device/xiaomi/pond/device.mk."
+            exit 1
           fi
 
       - name: Clone Device Tree
@@ -204,27 +235,18 @@ jobs:
           cd android-recovery
 
           DEVICE_DIR="${{ inputs.DEVICE_PATH }}"
-          DEVICE_URL="${{ inputs.DEVICE_TREE }}"
-          DEVICE_BRANCH="${{ inputs.DEVICE_TREE_BRANCH }}"
 
           if [ -e "$DEVICE_DIR" ]; then
-            if [ -d "$DEVICE_DIR/.git" ]; then
-              echo "Device tree already exists; checking its origin."
-              git -C "$DEVICE_DIR" remote -v
-              echo "::error::Device path already exists in the manifest."
-              echo "Remove the duplicate manifest entry or choose a different path."
-              exit 1
-            else
-              echo "::error::Device path exists but is not a Git checkout: $DEVICE_DIR"
-              exit 1
-            fi
+            echo "::error::Device path already exists: $DEVICE_DIR"
+            echo "Check whether the manifest already includes this device tree."
+            exit 1
           fi
 
           mkdir -p "$(dirname "$DEVICE_DIR")"
 
           git clone --depth=1 \
-            -b "$DEVICE_BRANCH" \
-            "$DEVICE_URL" \
+            -b "${{ inputs.DEVICE_TREE_BRANCH }}" \
+            "${{ inputs.DEVICE_TREE }}" \
             "$DEVICE_DIR"
 
           echo "=== Device tree commit ==="
@@ -238,21 +260,21 @@ jobs:
         run: |
           set -eo pipefail
           cd android-recovery
+
           DEVICE_DIR="${{ inputs.DEVICE_PATH }}"
 
-          echo "=== Device tree files ==="
-          find "$DEVICE_DIR" -maxdepth 4 -type f | sort
-
           echo "=== AndroidProducts.mk ==="
-          if [ -f "$DEVICE_DIR/AndroidProducts.mk" ]; then
-            cat "$DEVICE_DIR/AndroidProducts.mk"
-          else
+          if [ ! -f "$DEVICE_DIR/AndroidProducts.mk" ]; then
             echo "::error::AndroidProducts.mk is missing."
             exit 1
           fi
+          cat "$DEVICE_DIR/AndroidProducts.mk"
 
           echo "=== Device makefiles ==="
           find "$DEVICE_DIR" -maxdepth 4 -type f -name "*.mk" -print | sort
+
+          echo "=== Device makefile line 84 ==="
+          nl -ba "$DEVICE_DIR/device.mk" | sed -n '70,95p' || true
 
       - name: Check Device Makefile
         shell: bash
@@ -274,12 +296,11 @@ jobs:
           if [ -z "$DEVICE_MAKEFILE" ]; then
             echo "::error::No supported device makefile found."
             echo "Expected shrp_${DEVICE}.mk, omni_${DEVICE}.mk, or twrp_${DEVICE}.mk."
-            find "$DEVICE_DIR" -maxdepth 4 -type f -name "*.mk" -print | sort
             exit 1
           fi
 
           echo "DEVICE_MAKEFILE=$DEVICE_MAKEFILE" >> "$GITHUB_ENV"
-          echo "Using product makefile: $DEVICE_MAKEFILE"
+          echo "Using $DEVICE_MAKEFILE"
 
       - name: Configure CCache
         shell: bash
@@ -296,38 +317,31 @@ jobs:
           set -eo pipefail
           cd "${GITHUB_WORKSPACE}/android-recovery"
 
-          # Set TOP before loading envsetup; avoid nounset with legacy scripts.
           export TOP="${PWD}"
           export ALLOW_MISSING_DEPENDENCIES=true
+          export PATH="/usr/local/bin:$PATH"
 
-          echo "=== Source root ==="
+          echo "=== Build environment ==="
           echo "TOP=$TOP"
+          command -v python2.7
+          python2.7 --version
 
-          if [ ! -f "$TOP/build/envsetup.sh" ]; then
-            echo "::error::build/envsetup.sh not found."
+          test -f "$TOP/build/envsetup.sh" || {
+            echo "::error::build/envsetup.sh is missing."
             exit 1
-          fi
+          }
 
           DEVICE_DIR="$TOP/${{ inputs.DEVICE_PATH }}"
-          if [ ! -d "$DEVICE_DIR" ]; then
-            echo "::error::Device tree directory is missing: $DEVICE_DIR"
-            exit 1
-          fi
 
-          if [ ! -f "$DEVICE_DIR/AndroidProducts.mk" ]; then
+          test -f "$DEVICE_DIR/AndroidProducts.mk" || {
             echo "::error::AndroidProducts.mk is missing."
             exit 1
-          fi
+          }
 
-          echo "=== Device product registration ==="
-          cat "$DEVICE_DIR/AndroidProducts.mk"
-
-          echo "=== Device setup script ==="
-          if [ -f "$DEVICE_DIR/vendorsetup.sh" ]; then
-            echo "Found device vendorsetup.sh"
-          else
-            echo "::warning::vendorsetup.sh is missing; product registration must still work through AndroidProducts.mk."
-          fi
+          test -f "$TOP/vendor/shrp/config/common.mk" || {
+            echo "::error::SHRP common.mk is missing."
+            exit 1
+          }
 
           echo "=== Loading Android build environment ==="
           source "$TOP/build/envsetup.sh"
@@ -359,6 +373,7 @@ jobs:
 
           ARTIFACT_DIR="${GITHUB_WORKSPACE}/artifacts"
           DEVICE_OUTPUT="${OUTPUT_DIR}/${{ inputs.DEVICE_NAME }}"
+
           mkdir -p "$ARTIFACT_DIR"
 
           if [ -d "$DEVICE_OUTPUT" ]; then
@@ -388,6 +403,7 @@ jobs:
         shell: bash
         run: |
           set -eo pipefail
+
           DEVICE_OUTPUT="${OUTPUT_DIR}/${{ inputs.DEVICE_NAME }}"
           CHECK_FILE="${{ inputs.LDCHECK_FILE }}"
 
@@ -418,3 +434,4 @@ jobs:
             Device tree commit: ${{ env.SHORT_COMMIT }}
             Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           files: artifacts/*
+          
