@@ -94,8 +94,8 @@ jobs:
 
     - name: Python 2.7 symlinks (REQUIRED for SHRP)
       run: |
-        sudo ln -sf /usr/bin/python2 /usr/bin/python2.7
-        sudo ln -sf /usr/bin/python2 /usr/bin/python
+        sudo ln -sf /usr/bin/python2 /usr/bin/python2.7 || true
+        sudo ln -sf /usr/bin/python2 /usr/bin/python || true
         python2.7 --version
         python --version
 
@@ -208,10 +208,7 @@ jobs:
         echo "=== Searching for build output ==="
         find "${{ env.OUTPUT_DIR }}" -type f \( -name "*.img" -o -name "*.zip" -o -name "ramdisk*" \) -print
 
-        # Copy every .img, .zip, ramdisk from product dir into flat artifacts folder
         find "${{ env.OUTPUT_DIR }}" -type f \( -name "*.img" -o -name "*.zip" \) -exec cp -v {} "$ARTIFACT_DIR/" \; 2>/dev/null
-
-        # Copy ramdisk files if present
         find "${{ env.OUTPUT_DIR }}" -type f -name "ramdisk*" -exec cp -v {} "$ARTIFACT_DIR/" \; 2>/dev/null
 
         echo "=== Artifacts collected ==="
@@ -220,7 +217,6 @@ jobs:
         COUNT=$(find "$ARTIFACT_DIR" -type f | wc -l)
         echo "ARTIFACT_COUNT=$COUNT" >> $GITHUB_ENV
 
-        # Generate MD5 checksums
         cd "$ARTIFACT_DIR"
         for f in *; do
           if [ -f "$f" ]; then
@@ -228,7 +224,6 @@ jobs:
           fi
         done
 
-        # Save a listing for the release body
         ls -la "$ARTIFACT_DIR" > "$ARTIFACT_DIR/filelist.txt"
 
         if [ "$COUNT" -eq 0 ]; then
