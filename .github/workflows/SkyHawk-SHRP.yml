@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       MANIFEST:
-        description: "SHRP manifest repository URL"
+        description: "SHRP manifest URL"
         required: true
         default: "https://github.com/SHRP/manifest.git"
         type: string
@@ -17,7 +17,7 @@ on:
         type: string
 
       DEVICE_TREE:
-        description: "Xiaomi pond device tree repository"
+        description: "Xiaomi pond device tree URL"
         required: true
         default: "https://github.com/mdhaaib200520/SHRP_Redmi-14C"
         type: string
@@ -29,7 +29,7 @@ on:
         type: string
 
       DEVICE_PATH:
-        description: "Device tree path"
+        description: "Device tree directory"
         required: true
         default: "device/xiaomi/pond"
         type: string
@@ -41,7 +41,7 @@ on:
         type: string
 
       BUILD_TARGET:
-        description: "Recovery image target"
+        description: "Image to build"
         required: true
         type: choice
         options:
@@ -91,52 +91,28 @@ jobs:
           sudo apt-get clean
           df -h
 
-      - name: Install Build Dependencies
+      - name: Install Dependencies
         shell: bash
         run: |
           set -e
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            bc \
-            bison \
-            build-essential \
-            ccache \
-            curl \
-            flex \
-            g++-multilib \
-            gcc-multilib \
-            git \
-            git-lfs \
-            gnupg \
-            gperf \
-            imagemagick \
-            lib32ncurses-dev \
-            lib32z1-dev \
-            libelf-dev \
-            liblz4-tool \
-            libncurses-dev \
-            libssl-dev \
-            libxml2 \
-            libxml2-utils \
-            lzop \
-            openjdk-8-jdk \
-            python-is-python3 \
-            rsync \
-            schedtool \
-            squashfs-tools \
-            unzip \
-            xz-utils \
-            zip \
-            zlib1g-dev
+            bc bison build-essential ccache curl flex \
+            g++-multilib gcc-multilib git git-lfs gnupg gperf \
+            imagemagick lib32ncurses-dev lib32z1-dev libelf-dev \
+            liblz4-tool libncurses-dev libssl-dev libxml2 \
+            libxml2-utils lzop openjdk-11-jdk \
+            python-is-python3 rsync schedtool squashfs-tools \
+            unzip xz-utils zip zlib1g-dev
 
-          echo "=== Python versions ==="
           python --version
           python3 --version
+          java -version
 
           if command -v python2 >/dev/null 2>&1; then
             python2 --version
           else
-            echo "::warning::Python 2 is not installed. A legacy build may require additional setup."
+            echo "::warning::Python 2 is unavailable. A legacy build may require additional setup."
           fi
 
       - name: Configure Java
@@ -147,7 +123,6 @@ jobs:
           JAVA_HOME_PATH="$(dirname "$(dirname "$JAVA_PATH")")"
           echo "JAVA_HOME=$JAVA_HOME_PATH" >> "$GITHUB_ENV"
           echo "$JAVA_HOME_PATH/bin" >> "$GITHUB_PATH"
-          java -version
 
       - name: Configure Swap
         shell: bash
@@ -165,7 +140,6 @@ jobs:
         shell: bash
         run: |
           set -e
-
           git config --global user.name "${{ github.actor }}"
           git config --global user.email \
             "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
@@ -181,7 +155,7 @@ jobs:
       - name: Initialize Repo
         shell: bash
         run: |
-          set -e
+          set -eo pipefail
           mkdir -p android-recovery
           cd android-recovery
 
@@ -192,7 +166,7 @@ jobs:
       - name: Sync Sources
         shell: bash
         run: |
-          set -e
+          set -eo pipefail
           cd android-recovery
 
           repo sync -c -j"$(nproc --all)" \
@@ -203,50 +177,39 @@ jobs:
       - name: Verify SHRP Vendor Tree
         shell: bash
         run: |
-          set -e
+          set -eo pipefail
           cd android-recovery
 
-          echo "=== Checking vendor directories ==="
-          if [ ! -d vendor ]; then
-            echo "::error::The vendor directory is missing."
-            echo "Check the manifest URL and branch."
-            exit 1
-          fi
-
           if [ ! -d vendor/shrp ]; then
-            echo "::error::vendor/shrp was not synced."
-            echo "The selected manifest may not include the SHRP vendor repository."
-            find vendor -maxdepth 3 -type d -print | sort
+            echo "::error::vendor/shrp is missing."
+            echo "Check whether the selected manifest includes the SHRP vendor repository."
+            find vendor -maxdepth 3 -type d -print 2>/dev/null || true
             exit 1
           fi
 
-          echo "=== Searching SHRP configuration files ==="
+          echo "=== SHRP configuration files ==="
           find vendor/shrp -type f \
             \( -name "common.mk" -o -name "*shrp*.mk" \) \
             -print | sort
 
-          if [ -f vendor/shrp/config/common.mk ]; then
-            echo "Found vendor/shrp/config/common.mk"
-          else
-            echo "::warning::vendor/shrp/config/common.mk is not at the expected path."
-            echo "Continuing to inspect the tree; the build may still require this file."
-            find vendor/shrp -type f -name "common.mk" -print | sort
+          if [ ! -f vendor/shrp/config/common.mk ]; then
+            echo "::warning::vendor/shrp/config/common.mk is absent."
+            echo "The build will continue to product configuration."
+            echo "If SHRP requires this file, the manifest or vendor tree must be corrected."
           fi
-
-          echo "SHRP vendor directory check completed."
 
       - name: Clone Device Tree
         shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
           cd android-recovery
 
           DEVICE_DIR="${{ inputs.DEVICE_PATH }}"
           mkdir -p "$(dirname "$DEVICE_DIR")"
 
           if [ -e "$DEVICE_DIR" ]; then
-            echo "::error::Device directory already exists: $DEVICE_DIR"
-            echo "Check the manifest for an existing device tree."
+            echo "::error::Device path already exists: $DEVICE_DIR"
+            echo "Remove the duplicate manifest entry or choose the correct device path."
             exit 1
           fi
 
@@ -262,16 +225,19 @@ jobs:
       - name: Inspect Device Tree
         shell: bash
         run: |
-          set -e
+          set -eo pipefail
           cd android-recovery
-
           DEVICE_DIR="${{ inputs.DEVICE_PATH }}"
+
+          echo "=== Device tree ==="
+          find "$DEVICE_DIR" -maxdepth 4 -type f | sort
 
           echo "=== AndroidProducts.mk ==="
           if [ -f "$DEVICE_DIR/AndroidProducts.mk" ]; then
             cat "$DEVICE_DIR/AndroidProducts.mk"
           else
-            echo "::warning::AndroidProducts.mk is missing."
+            echo "::error::AndroidProducts.mk is missing."
+            exit 1
           fi
 
           echo "=== Device makefiles ==="
@@ -280,17 +246,11 @@ jobs:
       - name: Check Device Makefile
         shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
           cd android-recovery
 
           DEVICE_DIR="${{ inputs.DEVICE_PATH }}"
           DEVICE="${{ inputs.DEVICE_NAME }}"
-
-          if [ ! -d "$DEVICE_DIR" ]; then
-            echo "::error::Device directory not found: $DEVICE_DIR"
-            exit 1
-          fi
-
           DEVICE_MAKEFILE=""
 
           for PREFIX in shrp omni twrp; do
@@ -302,7 +262,7 @@ jobs:
 
           if [ -z "$DEVICE_MAKEFILE" ]; then
             echo "::error::No supported device makefile found."
-            echo "Expected shrp_${DEVICE}.mk, omni_${DEVICE}.mk, or twrp_${DEVICE}.mk"
+            echo "Expected shrp_${DEVICE}.mk, omni_${DEVICE}.mk, or twrp_${DEVICE}.mk."
             find "$DEVICE_DIR" -maxdepth 4 -type f -name "*.mk" -print | sort
             exit 1
           fi
@@ -322,12 +282,41 @@ jobs:
       - name: Build SHRP
         shell: bash
         run: |
-          set -euo pipefail
-          cd android-recovery
+          set -eo pipefail
+          cd "${GITHUB_WORKSPACE}/android-recovery"
 
-          source build/envsetup.sh
+          # Do not enable `set -u` when sourcing older Android envsetup scripts.
+          export TOP="${PWD}"
           export ALLOW_MISSING_DEPENDENCIES=true
 
+          echo "=== Source root ==="
+          echo "$TOP"
+
+          if [ ! -f "$TOP/build/envsetup.sh" ]; then
+            echo "::error::build/envsetup.sh not found."
+            exit 1
+          fi
+
+          if [ ! -d "$TOP/${{ inputs.DEVICE_PATH }}" ]; then
+            echo "::error::Device tree directory is missing."
+            exit 1
+          fi
+
+          echo "=== Loading Android build environment ==="
+          source "$TOP/build/envsetup.sh"
+
+          echo "=== Device setup script ==="
+          if [ -f "$TOP/${{ inputs.DEVICE_PATH }}/vendorsetup.sh" ]; then
+            echo "Found device vendorsetup.sh"
+          else
+            echo "::warning::Device vendorsetup.sh is missing."
+            echo "Checking product registration files."
+            if [ -f "$TOP/${{ inputs.DEVICE_PATH }}/AndroidProducts.mk" ]; then
+              cat "$TOP/${{ inputs.DEVICE_PATH }}/AndroidProducts.mk"
+            fi
+          fi
+
+          echo "=== Selecting product ==="
           lunch "${DEVICE_MAKEFILE}-eng"
 
           case "${{ inputs.BUILD_TARGET }}" in
@@ -343,35 +332,29 @@ jobs:
               ;;
           esac
 
-          echo "Building target: $BUILD_GOAL"
+          echo "=== Building $BUILD_GOAL ==="
           mka "$BUILD_GOAL" -j"$(nproc --all)"
 
       - name: Collect Artifacts
         if: always()
         shell: bash
         run: |
-          set -u
+          set -eo pipefail
 
           ARTIFACT_DIR="${GITHUB_WORKSPACE}/artifacts"
           DEVICE_OUTPUT="${OUTPUT_DIR}/${{ inputs.DEVICE_NAME }}"
-
           mkdir -p "$ARTIFACT_DIR"
 
           if [ -d "$DEVICE_OUTPUT" ]; then
-            while IFS= read -r -d '' FILE; do
-              cp -f "$FILE" "$ARTIFACT_DIR/"
-            done < <(
-              find "$DEVICE_OUTPUT" -type f \
-                \( -name "*.img" -o -name "*.zip" -o -name "ramdisk*" \) \
-                -print0
-            )
+            find "$DEVICE_OUTPUT" -type f \
+              \( -name "*.img" -o -name "*.zip" -o -name "ramdisk*" \) \
+              -exec cp -f -t "$ARTIFACT_DIR" {} +
           else
             echo "::warning::Output directory not found: $DEVICE_OUTPUT"
           fi
 
-          COUNT="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f | wc -l)"
+          COUNT="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')"
           echo "ARTIFACT_COUNT=$COUNT" >> "$GITHUB_ENV"
-
           echo "Collected $COUNT artifact(s)."
           ls -lh "$ARTIFACT_DIR"
 
@@ -393,28 +376,24 @@ jobs:
           name: SHRP ${{ inputs.DEVICE_NAME }} build ${{ github.run_number }}
           body: |
             Automated SHRP recovery build.
-
             Device: ${{ inputs.DEVICE_NAME }}
-            Build target: ${{ inputs.BUILD_TARGET }}
+            Target: ${{ inputs.BUILD_TARGET }}
             Manifest branch: ${{ inputs.MANIFEST_BRANCH }}
             Device tree branch: ${{ inputs.DEVICE_TREE_BRANCH }}
             Device tree commit: ${{ env.SHORT_COMMIT }}
-            Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           files: artifacts/*
 
       - name: Optional Linker Dependency Check
         if: success() && inputs.LDCHECK
         shell: bash
         run: |
-          set -e
-          cd android-recovery
-
+          set -eo pipefail
           DEVICE_OUTPUT="${OUTPUT_DIR}/${{ inputs.DEVICE_NAME }}"
           CHECK_FILE="${{ inputs.LDCHECK_FILE }}"
 
           if [ ! -f "$DEVICE_OUTPUT/$CHECK_FILE" ]; then
             echo "::warning::File not found: $DEVICE_OUTPUT/$CHECK_FILE"
-            echo "Skipping linker check."
             exit 0
           fi
 
