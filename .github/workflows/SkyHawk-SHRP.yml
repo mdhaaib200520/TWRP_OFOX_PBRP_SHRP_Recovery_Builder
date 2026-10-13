@@ -11,13 +11,13 @@ on:
         type: string
 
       MANIFEST_BRANCH:
-        description: "Manifest branch"
+        description: "SHRP manifest branch"
         required: true
         default: "shrp-12.1"
         type: string
 
       DEVICE_TREE:
-        description: "Device tree repository URL"
+        description: "Xiaomi pond device tree repository"
         required: true
         default: "https://github.com/mdhaaib200520/SHRP_Redmi-14C"
         type: string
@@ -41,7 +41,7 @@ on:
         type: string
 
       BUILD_TARGET:
-        description: "Image to build"
+        description: "Recovery image target"
         required: true
         type: choice
         options:
@@ -50,13 +50,13 @@ on:
         default: recovery
 
       LDCHECK:
-        description: "Run optional linker dependency check"
+        description: "Run optional linker check"
         required: true
         type: boolean
         default: false
 
       LDCHECK_FILE:
-        description: "Binary to inspect for linker dependencies"
+        description: "Binary to inspect"
         required: true
         default: "system/bin/recovery"
         type: string
@@ -79,7 +79,7 @@ jobs:
       ARTIFACT_COUNT: "0"
 
     steps:
-      - name: Check Out Builder Repository
+      - name: Checkout Builder Repository
         uses: actions/checkout@v4
 
       - name: Free Disk Space
@@ -87,7 +87,6 @@ jobs:
         run: |
           set -e
           sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
           sudo rm -rf /opt/ghc
           sudo apt-get clean
           df -h
@@ -116,13 +115,11 @@ jobs:
             libelf-dev \
             liblz4-tool \
             libncurses-dev \
-            libsdl1.2-dev \
             libssl-dev \
             libxml2 \
             libxml2-utils \
             lzop \
             openjdk-8-jdk \
-            pngcrush \
             python-is-python3 \
             rsync \
             schedtool \
@@ -133,26 +130,30 @@ jobs:
             zlib1g-dev
 
           echo "=== Python versions ==="
-          python3 --version
           python --version
+          python3 --version
+
           if command -v python2 >/dev/null 2>&1; then
             python2 --version
           else
-            echo "::warning::Python 2 is not installed. If this legacy SHRP branch requires Python 2, additional setup will be needed."
+            echo "::warning::Python 2 is not installed. A legacy build may require additional setup."
           fi
 
       - name: Configure Java
         shell: bash
         run: |
           set -e
-          echo "JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" >> "$GITHUB_ENV"
+          JAVA_PATH="$(readlink -f "$(command -v javac)")"
+          JAVA_HOME_PATH="$(dirname "$(dirname "$JAVA_PATH")")"
+          echo "JAVA_HOME=$JAVA_HOME_PATH" >> "$GITHUB_ENV"
+          echo "$JAVA_HOME_PATH/bin" >> "$GITHUB_PATH"
           java -version
 
       - name: Configure Swap
         shell: bash
         run: |
           set -e
-          if ! swapon --show | grep -q /swapfile; then
+          if ! swapon --show | grep -q '/swapfile'; then
             sudo fallocate -l 12G /swapfile
             sudo chmod 600 /swapfile
             sudo mkswap /swapfile
@@ -160,16 +161,18 @@ jobs:
           fi
           free -h
 
-      - name: Configure Git and Repo Tool
+      - name: Configure Git and Repo
         shell: bash
         run: |
           set -e
+
           git config --global user.name "${{ github.actor }}"
           git config --global user.email \
             "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
 
           mkdir -p "$HOME/bin"
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo \
+          curl -fsSL \
+            https://storage.googleapis.com/git-repo-downloads/repo \
             -o "$HOME/bin/repo"
           chmod a+x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
@@ -203,25 +206,34 @@ jobs:
           set -e
           cd android-recovery
 
-          if [ ! -d vendor/shrp ]; then
-            echo "::error::vendor/shrp directory not found."
-            echo "The selected manifest may not sync the SHRP vendor repository."
-            find vendor -maxdepth 3 -type d 2>/dev/null | sort || true
+          echo "=== Checking vendor directories ==="
+          if [ ! -d vendor ]; then
+            echo "::error::The vendor directory is missing."
+            echo "Check the manifest URL and branch."
             exit 1
           fi
 
-          echo "=== SHRP vendor configuration files ==="
-          find vendor/shrp -maxdepth 6 -type f \
+          if [ ! -d vendor/shrp ]; then
+            echo "::error::vendor/shrp was not synced."
+            echo "The selected manifest may not include the SHRP vendor repository."
+            find vendor -maxdepth 3 -type d -print | sort
+            exit 1
+          fi
+
+          echo "=== Searching SHRP configuration files ==="
+          find vendor/shrp -type f \
             \( -name "common.mk" -o -name "*shrp*.mk" \) \
             -print | sort
 
           if [ -f vendor/shrp/config/common.mk ]; then
-            echo "SHRP common.mk found at the expected path."
+            echo "Found vendor/shrp/config/common.mk"
           else
-            echo "::warning::vendor/shrp/config/common.mk is missing."
-            echo "The SHRP configuration may use a different path."
+            echo "::warning::vendor/shrp/config/common.mk is not at the expected path."
+            echo "Continuing to inspect the tree; the build may still require this file."
             find vendor/shrp -type f -name "common.mk" -print | sort
           fi
+
+          echo "SHRP vendor directory check completed."
 
       - name: Clone Device Tree
         shell: bash
@@ -234,7 +246,7 @@ jobs:
 
           if [ -e "$DEVICE_DIR" ]; then
             echo "::error::Device directory already exists: $DEVICE_DIR"
-            echo "Choose a different DEVICE_PATH or update the manifest."
+            echo "Check the manifest for an existing device tree."
             exit 1
           fi
 
@@ -252,20 +264,18 @@ jobs:
         run: |
           set -e
           cd android-recovery
-          DEVICE_DIR="${{ inputs.DEVICE_PATH }}"
 
-          echo "=== Device tree files ==="
-          find "$DEVICE_DIR" -maxdepth 4 -type f | sort
+          DEVICE_DIR="${{ inputs.DEVICE_PATH }}"
 
           echo "=== AndroidProducts.mk ==="
           if [ -f "$DEVICE_DIR/AndroidProducts.mk" ]; then
             cat "$DEVICE_DIR/AndroidProducts.mk"
           else
-            echo "::warning::AndroidProducts.mk not found."
+            echo "::warning::AndroidProducts.mk is missing."
           fi
 
-          echo "=== Product makefiles ==="
-          find "$DEVICE_DIR" -maxdepth 3 -name "*.mk" -type f -print | sort
+          echo "=== Device makefiles ==="
+          find "$DEVICE_DIR" -maxdepth 4 -type f -name "*.mk" -print | sort
 
       - name: Check Device Makefile
         shell: bash
@@ -292,16 +302,13 @@ jobs:
 
           if [ -z "$DEVICE_MAKEFILE" ]; then
             echo "::error::No supported device makefile found."
-            echo "Expected one of:"
-            echo "  $DEVICE_DIR/shrp_${DEVICE}.mk"
-            echo "  $DEVICE_DIR/omni_${DEVICE}.mk"
-            echo "  $DEVICE_DIR/twrp_${DEVICE}.mk"
-            find "$DEVICE_DIR" -maxdepth 4 -name "*.mk" -type f -print | sort
+            echo "Expected shrp_${DEVICE}.mk, omni_${DEVICE}.mk, or twrp_${DEVICE}.mk"
+            find "$DEVICE_DIR" -maxdepth 4 -type f -name "*.mk" -print | sort
             exit 1
           fi
 
           echo "DEVICE_MAKEFILE=$DEVICE_MAKEFILE" >> "$GITHUB_ENV"
-          echo "Using device makefile: $DEVICE_MAKEFILE"
+          echo "Using $DEVICE_MAKEFILE"
 
       - name: Configure CCache
         shell: bash
@@ -323,11 +330,18 @@ jobs:
 
           lunch "${DEVICE_MAKEFILE}-eng"
 
-          if [ "${{ inputs.BUILD_TARGET }}" = "vendorboot" ]; then
-            BUILD_GOAL="vendorbootimage"
-          else
-            BUILD_GOAL="recoveryimage"
-          fi
+          case "${{ inputs.BUILD_TARGET }}" in
+            recovery)
+              BUILD_GOAL="recoveryimage"
+              ;;
+            vendorboot)
+              BUILD_GOAL="vendorbootimage"
+              ;;
+            *)
+              echo "::error::Unsupported build target."
+              exit 1
+              ;;
+          esac
 
           echo "Building target: $BUILD_GOAL"
           mka "$BUILD_GOAL" -j"$(nproc --all)"
@@ -339,24 +353,25 @@ jobs:
           set -u
 
           ARTIFACT_DIR="${GITHUB_WORKSPACE}/artifacts"
-          mkdir -p "$ARTIFACT_DIR"
-
           DEVICE_OUTPUT="${OUTPUT_DIR}/${{ inputs.DEVICE_NAME }}"
 
-          if [ -d "$DEVICE_OUTPUT" ]; then
-            find "$DEVICE_OUTPUT" -type f \
-              \( -name "*.img" -o -name "*.zip" -o -name "ramdisk*" \) \
-              -print
+          mkdir -p "$ARTIFACT_DIR"
 
-            find "$DEVICE_OUTPUT" -type f \
-              \( -name "*.img" -o -name "*.zip" -o -name "ramdisk*" \) \
-              -exec cp -t "$ARTIFACT_DIR" {} +
+          if [ -d "$DEVICE_OUTPUT" ]; then
+            while IFS= read -r -d '' FILE; do
+              cp -f "$FILE" "$ARTIFACT_DIR/"
+            done < <(
+              find "$DEVICE_OUTPUT" -type f \
+                \( -name "*.img" -o -name "*.zip" -o -name "ramdisk*" \) \
+                -print0
+            )
           else
-            echo "::warning::Device output directory not found: $DEVICE_OUTPUT"
+            echo "::warning::Output directory not found: $DEVICE_OUTPUT"
           fi
 
           COUNT="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f | wc -l)"
           echo "ARTIFACT_COUNT=$COUNT" >> "$GITHUB_ENV"
+
           echo "Collected $COUNT artifact(s)."
           ls -lh "$ARTIFACT_DIR"
 
@@ -369,7 +384,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Create Release
+      - name: Create GitHub Release
         if: success() && env.ARTIFACT_COUNT != '0'
         uses: softprops/action-gh-release@v2
         with:
@@ -399,12 +414,13 @@ jobs:
 
           if [ ! -f "$DEVICE_OUTPUT/$CHECK_FILE" ]; then
             echo "::warning::File not found: $DEVICE_OUTPUT/$CHECK_FILE"
-            echo "Skipping linker dependency check."
+            echo "Skipping linker check."
             exit 0
           fi
 
           if command -v readelf >/dev/null 2>&1; then
             readelf -d "$DEVICE_OUTPUT/$CHECK_FILE" || true
           else
-            echo "::warning::readelf is unavailable."
+            echo "::warning::readelf is not installed."
           fi
+          
