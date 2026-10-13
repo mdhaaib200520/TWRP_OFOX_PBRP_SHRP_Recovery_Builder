@@ -1,140 +1,177 @@
 
-name: "SkyHawk [SHRP]"
+name: SkyHawk Recovery Project (SHRP) Builder
 
 on:
   workflow_dispatch:
     inputs:
       MANIFEST:
-        description: "SHRP Manifest URL"
+        description: "SHRP manifest repository URL"
         required: true
         default: "https://github.com/SHRP/manifest.git"
+        type: string
+
       MANIFEST_BRANCH:
-        description: "SHRP Manifest Branch"
+        description: "Manifest branch"
         required: true
         default: "shrp-12.1"
-        type: choice
-        options:
-          - shrp-12.1
-          - shrp-9.0
+        type: string
+
       DEVICE_TREE:
-        description: "Custom Recovery Tree"
+        description: "Device tree repository URL"
         required: true
         default: "https://github.com/mdhaaib200520/SHRP_Redmi-14C"
+        type: string
+
       DEVICE_TREE_BRANCH:
-        description: "Custom Recovery Tree Branch"
+        description: "Device tree branch"
         required: true
         default: "main"
+        type: string
+
       DEVICE_PATH:
-        description: "Specify your Device Path"
+        description: "Device tree path"
         required: true
         default: "device/xiaomi/pond"
+        type: string
+
       DEVICE_NAME:
-        description: "Specify your Device Codename"
+        description: "Device codename"
         required: true
         default: "pond"
+        type: string
+
       BUILD_TARGET:
-        description: "Specify your Build Target"
+        description: "Image to build"
         required: true
-        default: "vendorboot"
         type: choice
         options:
-          - vendorboot
           - recovery
+          - vendorboot
+        default: recovery
+
       LDCHECK:
-        description: "Use LDCHECK"
-        required: false
-        default: false
-        type: boolean
-      LDCHECKPATH:
-        description: "Path of blobs to check"
+        description: "Run optional linker dependency check"
         required: true
-        default: "system/bin/qseecomd"
+        type: boolean
+        default: false
+
+      LDCHECK_FILE:
+        description: "Binary to inspect for linker dependencies"
+        required: true
+        default: "system/bin/recovery"
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: shrp-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
-    name: "Build SHRP by ${{ github.actor }}"
+    name: Build SHRP for pond
     runs-on: ubuntu-22.04
-    if: github.event.repository.owner.id == github.event.sender.id
-
-    permissions:
-      contents: write
+    timeout-minutes: 360
 
     env:
       OUTPUT_DIR: ${{ github.workspace }}/android-recovery/out/target/product
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ARTIFACT_COUNT: "0"
 
     steps:
-      - name: Checkout
+      - name: Check Out Builder Repository
         uses: actions/checkout@v4
 
-      - name: Display Inputs
+      - name: Free Disk Space
         shell: bash
         run: |
-          echo "Manifest: ${{ inputs.MANIFEST }}"
-          echo "Manifest branch: ${{ inputs.MANIFEST_BRANCH }}"
-          echo "Device tree: ${{ inputs.DEVICE_TREE }}"
-          echo "Device tree branch: ${{ inputs.DEVICE_TREE_BRANCH }}"
-          echo "Device path: ${{ inputs.DEVICE_PATH }}"
-          echo "Device name: ${{ inputs.DEVICE_NAME }}"
-          echo "Build target: ${{ inputs.BUILD_TARGET }}image"
+          set -e
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo apt-get clean
+          df -h
 
-      - name: Cleanup
-        uses: rokibhasansagar/slimhub_actions@main
-
-      - name: Set Swap Space
-        uses: pierotofy/set-swap-space@master
-        with:
-          swap-size-gb: 12
-
-      - name: Prepare Environment
+      - name: Install Build Dependencies
         shell: bash
         run: |
           set -e
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            gperf gcc-multilib g++-multilib libc6-dev \
-            x11proto-core-dev libx11-dev tree lib32z-dev \
-            libgl1-mesa-dev libxml2-utils xsltproc bc ccache \
-            lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev \
-            libsdl1.2-dev libxml2 lzop pngcrush schedtool squashfs-tools \
-            imagemagick libbz2-dev lzma ncftp qemu-user-static \
-            libstdc++-10-dev libgflags-dev python3 python3-pip \
-            curl git git-lfs rsync unzip zip
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            curl \
+            flex \
+            g++-multilib \
+            gcc-multilib \
+            git \
+            git-lfs \
+            gnupg \
+            gperf \
+            imagemagick \
+            lib32ncurses-dev \
+            lib32z1-dev \
+            libelf-dev \
+            liblz4-tool \
+            libncurses-dev \
+            libsdl1.2-dev \
+            libssl-dev \
+            libxml2 \
+            libxml2-utils \
+            lzop \
+            openjdk-8-jdk \
+            pngcrush \
+            python-is-python3 \
+            rsync \
+            schedtool \
+            squashfs-tools \
+            unzip \
+            xz-utils \
+            zip \
+            zlib1g-dev
 
+          echo "=== Python versions ==="
           python3 --version
-          git --version
-
-          # Python 2 is optional at this stage. Do not replace the
-          # runner's system Python or create conflicting /usr/bin links.
+          python --version
           if command -v python2 >/dev/null 2>&1; then
             python2 --version
-          elif command -v python2.7 >/dev/null 2>&1; then
-            python2.7 --version
           else
-            echo "Python 2 is not installed on this runner."
+            echo "::warning::Python 2 is not installed. If this legacy SHRP branch requires Python 2, additional setup will be needed."
           fi
 
-      - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          max-size: "10G"
-
-      - name: Install Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: zulu
-          java-version: "8"
-
-      - name: Install Repo Tool
+      - name: Configure Java
         shell: bash
         run: |
           set -e
+          echo "JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")" >> "$GITHUB_ENV"
+          java -version
+
+      - name: Configure Swap
+        shell: bash
+        run: |
+          set -e
+          if ! swapon --show | grep -q /swapfile; then
+            sudo fallocate -l 12G /swapfile
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+            sudo swapon /swapfile
+          fi
+          free -h
+
+      - name: Configure Git and Repo Tool
+        shell: bash
+        run: |
+          set -e
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email \
+            "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+
           mkdir -p "$HOME/bin"
-          curl -fsSL \
-            https://storage.googleapis.com/git-repo-downloads/repo \
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo \
             -o "$HOME/bin/repo"
-          chmod +x "$HOME/bin/repo"
+          chmod a+x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
           "$HOME/bin/repo" version
 
@@ -145,10 +182,6 @@ jobs:
           mkdir -p android-recovery
           cd android-recovery
 
-          git config --global user.name "${{ github.actor }}"
-          git config --global user.email \
-            "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
-
           repo init --depth=1 \
             -u "${{ inputs.MANIFEST }}" \
             -b "${{ inputs.MANIFEST_BRANCH }}"
@@ -158,7 +191,8 @@ jobs:
         run: |
           set -e
           cd android-recovery
-          repo sync -j"$(nproc --all)" \
+
+          repo sync -c -j"$(nproc --all)" \
             --force-sync \
             --no-clone-bundle \
             --no-tags
@@ -169,14 +203,25 @@ jobs:
           set -e
           cd android-recovery
 
-          if [ ! -f vendor/shrp/config/common.mk ]; then
-            echo "::error::vendor/shrp/config/common.mk not found."
-            echo "Check the manifest branch and vendor tree."
-            ls -la vendor/ 2>/dev/null || true
+          if [ ! -d vendor/shrp ]; then
+            echo "::error::vendor/shrp directory not found."
+            echo "The selected manifest may not sync the SHRP vendor repository."
+            find vendor -maxdepth 3 -type d 2>/dev/null | sort || true
             exit 1
           fi
 
-          echo "SHRP vendor tree found."
+          echo "=== SHRP vendor configuration files ==="
+          find vendor/shrp -maxdepth 6 -type f \
+            \( -name "common.mk" -o -name "*shrp*.mk" \) \
+            -print | sort
+
+          if [ -f vendor/shrp/config/common.mk ]; then
+            echo "SHRP common.mk found at the expected path."
+          else
+            echo "::warning::vendor/shrp/config/common.mk is missing."
+            echo "The SHRP configuration may use a different path."
+            find vendor/shrp -type f -name "common.mk" -print | sort
+          fi
 
       - name: Clone Device Tree
         shell: bash
@@ -189,6 +234,7 @@ jobs:
 
           if [ -e "$DEVICE_DIR" ]; then
             echo "::error::Device directory already exists: $DEVICE_DIR"
+            echo "Choose a different DEVICE_PATH or update the manifest."
             exit 1
           fi
 
@@ -212,10 +258,14 @@ jobs:
           find "$DEVICE_DIR" -maxdepth 4 -type f | sort
 
           echo "=== AndroidProducts.mk ==="
-          cat "$DEVICE_DIR/AndroidProducts.mk" 2>/dev/null || true
+          if [ -f "$DEVICE_DIR/AndroidProducts.mk" ]; then
+            cat "$DEVICE_DIR/AndroidProducts.mk"
+          else
+            echo "::warning::AndroidProducts.mk not found."
+          fi
 
           echo "=== Product makefiles ==="
-          find "$DEVICE_DIR" -maxdepth 2 -name "*.mk" -print
+          find "$DEVICE_DIR" -maxdepth 3 -name "*.mk" -type f -print | sort
 
       - name: Check Device Makefile
         shell: bash
@@ -241,13 +291,26 @@ jobs:
           done
 
           if [ -z "$DEVICE_MAKEFILE" ]; then
-            echo "::error::No shrp_${DEVICE}.mk, omni_${DEVICE}.mk, or twrp_${DEVICE}.mk found."
-            find "$DEVICE_DIR" -maxdepth 3 -name "*.mk" -print
+            echo "::error::No supported device makefile found."
+            echo "Expected one of:"
+            echo "  $DEVICE_DIR/shrp_${DEVICE}.mk"
+            echo "  $DEVICE_DIR/omni_${DEVICE}.mk"
+            echo "  $DEVICE_DIR/twrp_${DEVICE}.mk"
+            find "$DEVICE_DIR" -maxdepth 4 -name "*.mk" -type f -print | sort
             exit 1
           fi
 
           echo "DEVICE_MAKEFILE=$DEVICE_MAKEFILE" >> "$GITHUB_ENV"
-          echo "Using makefile: $DEVICE_MAKEFILE"
+          echo "Using device makefile: $DEVICE_MAKEFILE"
+
+      - name: Configure CCache
+        shell: bash
+        run: |
+          set -e
+          ccache -M 5G
+          echo "USE_CCACHE=1" >> "$GITHUB_ENV"
+          echo "CCACHE_EXEC=$(command -v ccache)" >> "$GITHUB_ENV"
+          ccache -s
 
       - name: Build SHRP
         shell: bash
@@ -259,163 +322,89 @@ jobs:
           export ALLOW_MISSING_DEPENDENCIES=true
 
           lunch "${DEVICE_MAKEFILE}-eng"
-          make clean
 
-          mka "${{ inputs.BUILD_TARGET }}image" \
-            -j"$(nproc --all)"
+          if [ "${{ inputs.BUILD_TARGET }}" = "vendorboot" ]; then
+            BUILD_GOAL="vendorbootimage"
+          else
+            BUILD_GOAL="recoveryimage"
+          fi
+
+          echo "Building target: $BUILD_GOAL"
+          mka "$BUILD_GOAL" -j"$(nproc --all)"
 
       - name: Collect Artifacts
         if: always()
         shell: bash
         run: |
-          set +e
+          set -u
 
           ARTIFACT_DIR="${GITHUB_WORKSPACE}/artifacts"
           mkdir -p "$ARTIFACT_DIR"
 
-          if [ -d "${{ env.OUTPUT_DIR }}" ]; then
-            find "${{ env.OUTPUT_DIR }}" -type f \
+          DEVICE_OUTPUT="${OUTPUT_DIR}/${{ inputs.DEVICE_NAME }}"
+
+          if [ -d "$DEVICE_OUTPUT" ]; then
+            find "$DEVICE_OUTPUT" -type f \
               \( -name "*.img" -o -name "*.zip" -o -name "ramdisk*" \) \
               -print
 
-            find "${{ env.OUTPUT_DIR }}" -type f \
-              \( -name "*.img" -o -name "*.zip" \) \
-              -exec cp -f {} "$ARTIFACT_DIR/" \;
-
-            find "${{ env.OUTPUT_DIR }}" -type f -name "ramdisk*" \
-              -exec cp -f {} "$ARTIFACT_DIR/" \;
-          fi
-
-          COUNT=$(find "$ARTIFACT_DIR" -maxdepth 1 -type f \
-            ! -name "*.md5" \
-            ! -name "filelist.txt" | wc -l)
-
-          echo "ARTIFACT_COUNT=$COUNT" >> "$GITHUB_ENV"
-
-          for FILE in "$ARTIFACT_DIR"/*; do
-            [ -f "$FILE" ] || continue
-            case "$FILE" in
-              *.md5|*/filelist.txt) continue ;;
-            esac
-            md5sum "$FILE" > "$FILE.md5"
-          done
-
-          ls -la "$ARTIFACT_DIR" > "$ARTIFACT_DIR/filelist.txt"
-
-          if [ "$COUNT" -eq 0 ]; then
-            echo "::warning::No build artifacts found."
+            find "$DEVICE_OUTPUT" -type f \
+              \( -name "*.img" -o -name "*.zip" -o -name "ramdisk*" \) \
+              -exec cp -t "$ARTIFACT_DIR" {} +
           else
-            echo "Collected $COUNT artifact(s)."
+            echo "::warning::Device output directory not found: $DEVICE_OUTPUT"
           fi
 
-          exit 0
+          COUNT="$(find "$ARTIFACT_DIR" -maxdepth 1 -type f | wc -l)"
+          echo "ARTIFACT_COUNT=$COUNT" >> "$GITHUB_ENV"
+          echo "Collected $COUNT artifact(s)."
+          ls -lh "$ARTIFACT_DIR"
 
       - name: Upload Workflow Artifacts
         if: always() && env.ARTIFACT_COUNT != '0'
         uses: actions/upload-artifact@v4
         with:
-          name: shrp-${{ inputs.DEVICE_NAME }}-${{ github.run_id }}
-          path: ${{ github.workspace }}/artifacts/
-          if-no-files-found: warn
-          retention-days: 30
+          name: SHRP-${{ inputs.DEVICE_NAME }}-${{ github.run_number }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: Set Build Date
-        if: always()
-        shell: bash
-        run: |
-          echo "BUILD_DATE=$(date +%Y%m%d)" >> "$GITHUB_ENV"
-          echo "BUILD_TIME=$(date +%Y%m%d-%H%M)" >> "$GITHUB_ENV"
-
-      - name: Generate Release Body
-        if: always() && env.ARTIFACT_COUNT != '0'
-        shell: bash
-        run: |
-          {
-            echo "## Unofficial SHRP Recovery"
-            echo
-            echo "**Device:** ${{ inputs.DEVICE_NAME }}"
-            echo "**Build target:** ${{ inputs.BUILD_TARGET }}image"
-            echo "**Build date:** ${BUILD_DATE}"
-            echo
-            echo "### Source"
-            echo "- Manifest: ${{ inputs.MANIFEST }}"
-            echo "- Manifest branch: ${{ inputs.MANIFEST_BRANCH }}"
-            echo "- Device tree: ${{ inputs.DEVICE_TREE }}"
-            echo "- Device tree branch: ${{ inputs.DEVICE_TREE_BRANCH }}"
-            echo "- Commit: ${COMMIT_ID:-unknown}"
-            echo
-            echo "### Files and MD5"
-          } > "${GITHUB_WORKSPACE}/release_body.md"
-
-          for FILE in "${GITHUB_WORKSPACE}"/artifacts/*; do
-            [ -f "$FILE" ] || continue
-
-            case "$FILE" in
-              *.md5|*/filelist.txt) continue ;;
-            esac
-
-            NAME="$(basename "$FILE")"
-            HASH="$(md5sum "$FILE" | cut -d ' ' -f 1)"
-            SIZE="$(du -h "$FILE" | cut -f1)"
-
-            echo "- $NAME ($SIZE) — MD5: $HASH" \
-              >> "${GITHUB_WORKSPACE}/release_body.md"
-          done
-
-          {
-            echo
-            echo "### Flash command"
-            echo '```bash'
-
-            if [ "${{ inputs.BUILD_TARGET }}" = "vendorboot" ]; then
-              echo "fastboot flash vendor_boot vendor_boot.img"
-            else
-              echo "fastboot flash recovery recovery.img"
-            fi
-
-            echo '```'
-          } >> "${GITHUB_WORKSPACE}/release_body.md"
-
-          cat "${GITHUB_WORKSPACE}/release_body.md"
-
-      - name: Create GitHub Release
-        if: always() && env.ARTIFACT_COUNT != '0'
+      - name: Create Release
+        if: success() && env.ARTIFACT_COUNT != '0'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: shrp-${{ inputs.DEVICE_NAME }}-${{ env.BUILD_TIME }}
-          name: SHRP ${{ inputs.DEVICE_NAME }} - ${{ env.BUILD_DATE }}
-          body_path: ${{ github.workspace }}/release_body.md
-          files: |
-            ${{ github.workspace }}/artifacts/*
-          draft: false
-          prerelease: true
-          generate_release_notes: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: SHRP-${{ inputs.DEVICE_NAME }}-${{ github.run_number }}
+          name: SHRP ${{ inputs.DEVICE_NAME }} build ${{ github.run_number }}
+          body: |
+            Automated SHRP recovery build.
 
-      - name: Run LDCheck
-        if: inputs.LDCHECK
-        continue-on-error: true
+            Device: ${{ inputs.DEVICE_NAME }}
+            Build target: ${{ inputs.BUILD_TARGET }}
+            Manifest branch: ${{ inputs.MANIFEST_BRANCH }}
+            Device tree branch: ${{ inputs.DEVICE_TREE_BRANCH }}
+            Device tree commit: ${{ env.SHORT_COMMIT }}
+            Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          files: artifacts/*
+
+      - name: Optional Linker Dependency Check
+        if: success() && inputs.LDCHECK
         shell: bash
         run: |
-          set +e
+          set -e
           cd android-recovery
 
-          DEVICE_OUT="${{ env.OUTPUT_DIR }}/${{ inputs.DEVICE_NAME }}"
-          mkdir -p "$DEVICE_OUT/recovery/root"
+          DEVICE_OUTPUT="${OUTPUT_DIR}/${{ inputs.DEVICE_NAME }}"
+          CHECK_FILE="${{ inputs.LDCHECK_FILE }}"
 
-          if [ -f tools/libneeds ]; then
-            cp -f tools/libneeds "$DEVICE_OUT/recovery/root/"
+          if [ ! -f "$DEVICE_OUTPUT/$CHECK_FILE" ]; then
+            echo "::warning::File not found: $DEVICE_OUTPUT/$CHECK_FILE"
+            echo "Skipping linker dependency check."
+            exit 0
           fi
 
-          if [ -f tools/ldcheck ]; then
-            cp -f tools/ldcheck "$DEVICE_OUT/recovery/root/"
-          fi
-
-          cd "$DEVICE_OUT/recovery/root" || exit 0
-
-          if [ -f ldcheck ]; then
-            python3 ldcheck \
-              -p system/lib64:vendor/lib64:system/lib:vendor/lib \
-              -d "${{ inputs.LDCHECKPATH }}"
+          if command -v readelf >/dev/null 2>&1; then
+            readelf -d "$DEVICE_OUTPUT/$CHECK_FILE" || true
           else
-            echo "::warning::ldcheck tool not found; skipping."
+            echo "::warning::readelf is unavailable."
           fi
